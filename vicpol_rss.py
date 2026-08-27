@@ -13,7 +13,6 @@ def generate_vicpol_rss():
     
     # 1. Fetch the webpage
     response = requests.get(url, headers=headers)
-    response.raise_for_status()
     soup = BeautifulSoup(response.text, 'html.parser')
     
     # 2. Initialize the RSS Feed
@@ -24,60 +23,72 @@ def generate_vicpol_rss():
     fg.language('en')
     
     melb_tz = pytz.timezone('Australia/Melbourne')
-    
-    # 3. Find all links on the main page
-    main_content = soup.find('main') or soup
-    links = main_content.find_all('a', href=True)
-    
     added_urls = set()
     
-    # 4. Filter the links to find the actual news articles
-    for a in links:
+    # 3. Find all <a> tags that look like news headlines
+    for a in soup.find_all('a', href=True):
+        title = a.get_text(strip=True)
         href = a['href']
-        title = a.text.strip()
         
-        # Skip short links (like "Next" or "Home") and non-article links
-        if len(title) < 15 or 'breaking-news' in href or href.startswith('#'):
+        # A headline is usually at least 3 words and 15 characters long
+        if len(title.split()) < 3 or len(title) < 15:
             continue
             
-        # Make sure the URL is complete
+        # Ignore pagination buttons and generic links
+        if 'breaking-news' in href or href.startswith('#') or '?' in href:
+            continue
+            
+        # Ensure the link is a full URL
         full_link = href if href.startswith('http') else 'https://www.police.vic.gov.au' + href
         
-        # Don't add the same article twice
         if full_link in added_urls:
             continue
             
-        # 5. Look near the link for the date and snippet
-        parent = a.find_parent('div')
-        description = ""
+        # 4. Search the surrounding code for the date and description
+        parent = a.parent
         date_str = ""
+        description = ""
         
-        if parent:
-            text_blocks = parent.get_text(separator='|', strip=True).split('|')
-            for block in text_blocks:
-                # Look for a date pattern like '27 August 2026'
-                if re.match(r'\d{1,2}\s+[A-Za-z]+\s+\d{4}', block):
-                    date_str = block
-                # Look for a longer sentence that isn't the title (the snippet)
-                elif len(block) > 50 and block != title:
-                    description = block
-                    
-        # Parse the date so RSS readers understand it
+        # Walk up the HTML tree up to 4 levels to find the container holding the text
+        for _ in range(4):
+            if not parent: break
+            
+            # Extract all text in this block, separated by a distinct character
+            text_content = parent.get_text(separator=' | ', strip=True)
+            
+            # Look for a spelled-out date (e.g., 27 August 2026)
+            date_match = re.search(r'\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b', text_content, re.IGNORECASE)
+            
+            if date_match:
+                date_str = date_match.group(0)
+                
+                # The description is usually the longest piece of text in this block that isn't the title
+                parts = [p.strip() for p in text_content.split(' | ') if p.strip()]
+                for part in parts:
+                    if len(part) > 50 and part != title and part != date_str:
+                        description = part
+                        break
+                
+                # Stop walking up the tree once we find the date
+                break
+                
+            parent = parent.parent
+            
+        # 5. Parse the date so RSS readers understand it
         dt = datetime.now(melb_tz)
         if date_str:
             try:
-                clean_date = re.sub(r'\s+', ' ', date_str).strip()
-                parsed_dt = datetime.strptime(clean_date, '%d %B %Y')
+                parsed_dt = datetime.strptime(date_str, '%d %B %Y')
                 dt = melb_tz.localize(parsed_dt)
             except ValueError:
                 pass
                 
-        # 6. Add it to the feed!
+        # 6. Add the article to the feed!
         fe = fg.add_entry()
         fe.id(full_link)
         fe.title(title)
         fe.link(href=full_link)
-        fe.description(description if description else "No description available.")
+        fe.description(description if description else "Read the full update on the Victoria Police website.")
         fe.published(dt)
         added_urls.add(full_link)
 
