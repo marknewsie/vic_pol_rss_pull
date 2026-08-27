@@ -25,56 +25,49 @@ def generate_vicpol_rss():
     melb_tz = pytz.timezone('Australia/Melbourne')
     added_urls = set()
     
-    # 3. Find all <a> tags that look like news headlines
-    for a in soup.find_all('a', href=True):
-        title = a.get_text(strip=True)
-        href = a['href']
+    # 3. Find the exact Ripple components based on the code you found!
+    # We look for all divs that have the 'rpl-search-result__url' class
+    for url_div in soup.find_all('div', class_=lambda c: c and 'rpl-search-result__url' in c):
         
-        # A headline is usually at least 3 words and 15 characters long
-        if len(title.split()) < 3 or len(title) < 15:
+        # The parent container holds the title, date, and description
+        parent = url_div.parent
+        if not parent:
             continue
             
-        # Ignore pagination buttons and generic links
-        if 'breaking-news' in href or href.startswith('#') or '?' in href:
+        # Extract the raw link text you found
+        raw_link = url_div.get_text(strip=True)
+        if not raw_link:
             continue
             
-        # Ensure the link is a full URL
-        full_link = href if href.startswith('http') else 'https://www.police.vic.gov.au' + href
+        # Ensure it is a complete URL
+        full_link = 'https://' + raw_link if not raw_link.startswith('http') else raw_link
         
         if full_link in added_urls:
             continue
             
-        # 4. Search the surrounding code for the date and description
-        parent = a.parent
+        # 4. Extract the Title (usually an <a> tag inside the parent)
+        title_tag = parent.find('a')
+        title = title_tag.get_text(strip=True) if title_tag else "Victoria Police Update"
+        
+        # 5. Extract the text block to find the Date and Description
+        text_content = parent.get_text(separator=' | ', strip=True)
         date_str = ""
         description = ""
         
-        # Walk up the HTML tree up to 4 levels to find the container holding the text
-        for _ in range(4):
-            if not parent: break
+        # Look for a spelled-out date (e.g., 27 August 2026)
+        date_match = re.search(r'\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b', text_content, re.IGNORECASE)
+        
+        if date_match:
+            date_str = date_match.group(0)
             
-            # Extract all text in this block, separated by a distinct character
-            text_content = parent.get_text(separator=' | ', strip=True)
-            
-            # Look for a spelled-out date (e.g., 27 August 2026)
-            date_match = re.search(r'\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b', text_content, re.IGNORECASE)
-            
-            if date_match:
-                date_str = date_match.group(0)
-                
-                # The description is usually the longest piece of text in this block that isn't the title
-                parts = [p.strip() for p in text_content.split(' | ') if p.strip()]
-                for part in parts:
-                    if len(part) > 50 and part != title and part != date_str:
-                        description = part
-                        break
-                
-                # Stop walking up the tree once we find the date
+        # Split the text apart and grab the longest sentence for the description
+        parts = [p.strip() for p in text_content.split(' | ') if p.strip()]
+        for part in parts:
+            if len(part) > 40 and part != title and part != raw_link and part != date_str:
+                description = part
                 break
                 
-            parent = parent.parent
-            
-        # 5. Parse the date so RSS readers understand it
+        # 6. Parse the date so RSS readers understand it
         dt = datetime.now(melb_tz)
         if date_str:
             try:
@@ -83,13 +76,14 @@ def generate_vicpol_rss():
             except ValueError:
                 pass
                 
-        # 6. Add the article to the feed!
+        # 7. Add the article to the feed!
         fe = fg.add_entry()
         fe.id(full_link)
         fe.title(title)
         fe.link(href=full_link)
         fe.description(description if description else "Read the full update on the Victoria Police website.")
         fe.published(dt)
+        
         added_urls.add(full_link)
 
     # Save the file
